@@ -1,39 +1,23 @@
-# Scanner de CNPJ em código-fonte
+# Scanner de impacto de CNPJ alfanumérico (modo defensável)
 
-Script em Python para varrer diretórios no **Windows e Linux** e identificar pontos que podem precisar de ajustes para o **CNPJ alfanumérico** (novos CNPJs a partir de **julho de 2026**).
+Scanner Python para mapear impacto real da migração de CNPJ com foco em **defensabilidade técnica** (menos ruído, mais evidência contextual).
 
-## Cobertura implementada
+## Principais mudanças
 
-- Busca por padrões de:
-  - **Referência Direta**
-  - **Máscara**
-  - **Validação**
-  - **Normalização**
-  - **Banco**
-  - **Front-end**
-  - **Integração**
-  - **Mensagem**
-  - **Indícios correlatos** (opcional via `--incluir-indicios`)
-- Agrupamento por **projeto/produto** com `--project-group-mode` (`auto`, `topdir`, `none`).
-- Exportação em **CSV**, **TXT** e **HTML** (ou sem HTML com `--sem-html`).
-- Exibição de progresso em tempo real no console (`Coletando arquivos`, `Processados X/Y`).
-- Exibe caminho relativo e **arquivo absoluto** para facilitar triagem entre clones locais diferentes.
-- Por padrão, **ignora documentação** (`README*`, `.md`, `.txt`, `.rst`, pastas `docs/`, `examples/`) para reduzir falso positivo.
-
-## Extensões cobertas por padrão
-
-Inclui, entre outras: `.cs`, `.vb`, `.fs`, `.java`, `.kt`, `.scala`, `.go`, `.rs`, `.php`, `.py`, `.rb`, `.js`, `.ts`, `.jsx`, `.tsx`, `.mjs`, `.cjs`, `.vue`, `.svelte`, `.html`, `.cshtml`, `.razor`, `.sql`, `.ddl`, `.dml`, `.psql`, `.hql`, `.ktr`, `.kjb`, `.json`, `.xml`, `.yml`, `.yaml`, `.ini`, `.env`, `.properties`, `.csproj`, `.vbproj`, `.tf`, `.tfvars`, `.ps1`, `.sh`, `.bat`, `.cmd`, `.md`, `.txt`, `.ipynb`.
-
-Você ainda pode adicionar extensões com `--include-ext`.
+- **Modo executivo (padrão)**: só promove achado com âncora semântica de CNPJ e validação contextual.
+- **Modo exploratório**: amplia cobertura e aceita sinais mais fracos.
+- Exclusão estrutural no executivo para `third_party`, `generated`, `snapshot`, `designer`.
+- Janela de contexto configurável (`--context-window`, padrão `4` => ±4 linhas).
+- Deduplicação por bloco/categoria (`dedup_id`).
 
 ## Requisitos
 
 - Python 3.9+
 
-## Uso rápido
+## Uso
 
 ```bash
-python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida
+python cnpj_code_scanner.py /caminho/do/codigo --out-dir ./saida
 ```
 
 Windows (PowerShell):
@@ -42,53 +26,32 @@ Windows (PowerShell):
 python .\cnpj_code_scanner.py "E:\Workspace\TCE" --out-dir "E:\Workspace\TCE\resultado_cnpj_scan"
 ```
 
-Com indícios correlatos:
+Modo exploratório:
 
 ```bash
-python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --incluir-indicios
+python cnpj_code_scanner.py /caminho --out-dir ./saida --modo-relatorio exploratorio
 ```
 
-Incluindo documentação (quando você quiser varrer também README/docs):
+Somente CSV + HTML:
 
 ```bash
-python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --incluir-documentacao
+python cnpj_code_scanner.py /caminho --out-dir ./saida --somente-csv-html
 ```
 
-Sem relatório HTML:
+## Saídas
 
-```bash
-python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --sem-html
-```
+- `relatorio_cnpj.csv` (compatível com fluxo principal)
+- `impactos_priorizados.csv`
+- `ruidos_descartados.csv`
+- `relatorio_cnpj.txt` (exceto com `--sem-txt` / `--somente-csv-html`)
+- `relatorio_executivo.html` e `relatorio_cnpj.html` (exceto com `--sem-html`)
 
-Somente CSV e HTML (sem TXT):
+## Colunas adicionais
 
-```bash
-python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --somente-csv-html
-```
-
-## Saídas geradas
-
-No diretório de saída:
-
-- `relatorio_cnpj.csv`
-- `relatorio_cnpj.txt`
-- `relatorio_cnpj.html` (exceto com `--sem-html`)
-
-Você também pode remover TXT com `--sem-txt` ou `--somente-csv-html`.
-
-Campos principais:
-
-- `projeto`
-- `arquivo` e `arquivo_absoluto`
-- `extensao` e `camada`
-- `nome_padrao`, `categoria`, `criticidade`
-- `trecho`, `contexto`, `acao_sugerida`
-
-## Observações
-
-- A varredura é **heurística** (texto/regex), então pode haver falsos positivos.
-- Use `--incluir-indicios` apenas quando quiser ampliar cobertura com mais ruído.
-
-## Referência oficial
-
-- Receita Federal: https://www.gov.br/receitafederal/pt-br/assuntos/noticias/2024/outubro/cnpj-tera-letras-e-numeros-a-partir-de-julho-de-2026
+- `score`
+- `source_kind`
+- `is_generated`
+- `is_third_party`
+- `contextual_match`
+- `prioridade_backlog`
+- `dedup_id`

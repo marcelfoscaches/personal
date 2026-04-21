@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Scanner de código-fonte para identificar impactos da migração de CNPJ alfanumérico."""
+"""Scanner defensável de impactos do CNPJ alfanumérico."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html
 import re
 from dataclasses import dataclass
@@ -12,33 +13,26 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 SUPPORTED_EXTENSIONS = {
-    ".cs", ".vb", ".fs", ".fsx",
-    ".java", ".kt", ".kts", ".scala", ".go", ".rs", ".php", ".py", ".rb", ".pl",
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte",
-    ".html", ".htm", ".cshtml", ".razor", ".aspx", ".ascx", ".css", ".scss", ".sass", ".less",
-    ".sql", ".ddl", ".dml", ".psql", ".hql", ".ktr", ".kjb",
-    ".json", ".xml", ".yml", ".yaml", ".config", ".ini", ".properties", ".env",
-    ".csproj", ".vbproj", ".gradle", ".tf", ".tfvars",
-    ".ps1", ".bat", ".cmd", ".sh", ".bash",
-    ".txt", ".md", ".rst", ".ipynb",
+    ".cs", ".vb", ".fs", ".fsx", ".java", ".kt", ".kts", ".scala", ".go", ".rs", ".php", ".py", ".rb",
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".html", ".htm", ".cshtml", ".razor",
+    ".aspx", ".ascx", ".css", ".scss", ".sass", ".less", ".sql", ".ddl", ".dml", ".psql", ".hql", ".ktr", ".kjb",
+    ".json", ".xml", ".yml", ".yaml", ".config", ".ini", ".properties", ".env", ".csproj", ".vbproj", ".gradle",
+    ".tf", ".tfvars", ".ps1", ".bat", ".cmd", ".sh", ".bash",
 }
 
 DEFAULT_EXCLUDED_DIRS = {
-    ".git", ".svn", ".hg", "node_modules", "dist", "build", "target", "bin", "obj",
-    ".idea", ".vscode", "coverage", "vendor", "packages", "wwwroot", "publicacoes",
-    "__pycache__", ".venv", "venv",
+    ".git", ".svn", ".hg", "node_modules", "dist", "build", "target", "bin", "obj", ".idea", ".vscode", "coverage",
+    "vendor", "packages", "wwwroot", "publicacoes", "__pycache__", ".venv", "venv", "docs", "documentation", "examples", "samples",
 }
-
 PROJECT_MARKERS = {
-    ".git", ".sln", "pom.xml", "build.gradle", "settings.gradle", "settings.gradle.kts",
-    "package.json", "angular.json", "composer.json", "Gemfile", "pyproject.toml",
-    "setup.py", "requirements.txt", ".project", "Cargo.toml",
+    ".git", ".sln", "pom.xml", "build.gradle", "settings.gradle", "settings.gradle.kts", "package.json", "angular.json",
+    "composer.json", "Gemfile", "pyproject.toml", "setup.py", "requirements.txt", "Cargo.toml",
 }
 
 SKIP_FILENAME_RE = re.compile(r"\.(?:min\.(?:js|css)|map|lock)$", re.IGNORECASE)
 SKIP_FILENAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock"}
-DOC_EXTENSIONS = {".md", ".txt", ".rst"}
-DOC_DIR_HINTS = {"doc", "docs", "documentation", "example", "examples", "sample", "samples"}
+CNPJ_ANCHOR_RE = re.compile(r"(?i)\b(cnpj|cpf\s*/\s*cnpj|cpfcnpj|cnpjcpf|nr_cnpj|num_cnpj|cd_cnpj|cnpj_nr|cnpj_num)\b")
+MASK_CLASSIC_RE = re.compile(r"00\.000\.000/0000-00|99\.999\.999/9999-99|##\.###\.###/####-##")
 
 
 @dataclass(frozen=True)
@@ -47,7 +41,10 @@ class PatternDef:
     regex: re.Pattern[str]
     categoria: str
     criticidade: str
-    apenas_indicios: bool = False
+    prioridade_backlog: str
+    score: int
+    requires_context: bool = True
+    mode: str = "executivo"  # executivo | exploratorio
 
 
 @dataclass
@@ -63,152 +60,52 @@ class Finding:
     criticidade: str
     trecho: str
     contexto: str
-    acao_sugerida: str
+    score: int
+    source_kind: str
+    is_generated: str
+    is_third_party: str
+    contextual_match: str
+    prioridade_backlog: str
+    dedup_id: str
 
 
 PATTERNS: tuple[PatternDef, ...] = (
-    PatternDef("CNPJ", re.compile(r"(?i)\bcnpj\b"), "Referencia Direta", "Alta"),
-    PatternDef("CPF/CNPJ combinado", re.compile(r"(?i)\bcpf\s*/\s*cnpj\b|\bcpfcnpj\b|\bcnpjcpf\b"), "Referencia Direta", "Alta"),
-    PatternDef("Nome completo", re.compile(r"(?i)cadastro nacional (da |de )?pessoa jur[ií]dica"), "Referencia Direta", "Alta"),
-
-    PatternDef("Mascara 99.999.999", re.compile(r"99\.999\.999/9999-99|00\.000\.000/0000-00|##\.###\.###/####-##|__\.___.___/____-__"), "Mascara", "Alta"),
-    PatternDef("Mask/placeholder CNPJ", re.compile(r"(?i)(mask|mascara|format|pattern|placeholder)[^\n]{0,60}cnpj|cnpj[^\n]{0,60}(mask|mascara|format|pattern)"), "Mascara", "Media"),
-
-    PatternDef("Regex 14 dígitos", re.compile(r"\\d\{14\}|\[0-9\]\{14\}"), "Validacao", "Alta"),
-    PatternDef("Regex CNPJ formatado", re.compile(r"\\d\{2\}\\\.\\d\{3\}\\\.\\d\{3\}[/\\/]\\d\{4\}-\\d\{2\}"), "Validacao", "Alta"),
-    PatternDef("Metodo ValidarCnpj", re.compile(r"(?i)\bvalid\w*cnpj\b|\bcnpj\w*valid\b|\bisValidCnpj\b|\bcnpjValido\b|\bcheckCnpj\b|\bvalidaCnpj\b"), "Validacao", "Alta"),
-    PatternDef("Dígito verificador", re.compile(r"(?i)d[ií]gito\s+verificador|m[oó]dulo\s*11"), "Validacao", "Alta"),
-    PatternDef("Pesos CNPJ 1o dígito", re.compile(r"5\s*,\s*4\s*,\s*3\s*,\s*2\s*,\s*9\s*,\s*8\s*,\s*7\s*,\s*6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2"), "Validacao", "Alta"),
-    PatternDef("Pesos CNPJ 2o dígito", re.compile(r"6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2\s*,\s*9\s*,\s*8\s*,\s*7\s*,\s*6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2"), "Validacao", "Alta"),
-
-    PatternDef("Replace ponto/barra", re.compile(r'Replace\(\s*[\'"][./\-][\'"]\s*,\s*[\'"][\'"]\s*\)'), "Normalizacao", "Media"),
-    PatternDef("Remove nao-numericos", re.compile(r"(?i)(Regex\.Replace\(.+\[\^\\d\]|\.replace\s*\(/\\D/g|re\.sub\s*\(.+\\D)"), "Normalizacao", "Media"),
-    PatternDef("Funcao ApenasNumeros", re.compile(r"(?i)\b(apenasnumeros|somentenumeros|removemascara|removerformatacao|stripnonnumeric|onlynumbers)\b"), "Normalizacao", "Media"),
-
-    PatternDef("Coluna CHAR/VARCHAR(14/18)", re.compile(r"(?i)\b(n?var)?char\s*\(\s*(14|18)\s*\)"), "Banco", "Alta"),
-    PatternDef("DDL CREATE/ALTER TABLE", re.compile(r"(?i)(create|alter)\s+table[^\n]{0,120}cnpj"), "Banco", "Alta"),
-    PatternDef("Nomes de coluna CNPJ", re.compile(r"(?i)\b(nr_cnpj|num_cnpj|cd_cnpj|cnpj_nr|cnpj_num|ds_cnpj|tx_cnpj)\b"), "Banco", "Alta"),
-    PatternDef("Index/constraint CNPJ", re.compile(r"(?i)(create\s+(unique\s+)?index|constraint)[^\n]{0,80}cnpj"), "Banco", "Alta"),
-
-    PatternDef("Atributo HTML com CNPJ", re.compile(r"(?i)(id|name|for|placeholder)\s*=\s*['\"][^'\"]*cnpj[^'\"]*['\"]"), "Front-end", "Media"),
-    PatternDef("InputMask CNPJ", re.compile(r"(?i)\bmask\b[^\n]{0,40}cnpj|\bcnpj\b[^\n]{0,40}\bmask\b|\binputmask\b"), "Front-end", "Alta"),
-    PatternDef("Label/caption CNPJ", re.compile(r"(?i)(label|caption|title|hint|tooltip|aria-label)[^\n]{0,60}cnpj"), "Front-end", "Media"),
-
-    PatternDef("Receita Federal/SPED/NF-e", re.compile(r"(?i)(receita\s*federal|sped|nfe|nota\s*fiscal|sintegra)[^\n]{0,80}cnpj|cnpj[^\n]{0,80}(receita|sped|nfe)"), "Integracao", "Alta"),
-    PatternDef("Rota API com CNPJ", re.compile(r"(?i)(route|endpoint|url|uri|path)\s*[=:][^\n]{0,60}cnpj"), "Integracao", "Media"),
-
-    PatternDef("Mensagem erro CNPJ", re.compile(r"(?i)(message|mensagem|erro|error|msg)[^\n]{0,60}cnpj|cnpj[^\n]{0,60}(invalido|inválido|invalid|obrigat)"), "Mensagem", "Media"),
-
-    PatternDef("Razão Social", re.compile(r"(?i)\b(razao\s+social|nome\s+fantasia|matriz|filial|cnpj\s+matriz)\b"), "Indicio Correlato", "Baixa", True),
-    PatternDef("Documento fiscal", re.compile(r"(?i)\b(nr_?documento|num_?documento|pessoajuridica|pessoa_juridica)\b"), "Indicio Correlato", "Baixa", True),
+    PatternDef("CNPJ", re.compile(r"(?i)\bcnpj\b"), "Referencia Direta", "Alta", "P0", 95, False),
+    PatternDef("CPF/CNPJ combinado", re.compile(r"(?i)\bcpf\s*/\s*cnpj\b|\bcpfcnpj\b|\bcnpjcpf\b"), "Referencia Direta", "Alta", "P0", 95, False),
+    PatternDef("Nome completo cadastro", re.compile(r"(?i)cadastro nacional (da |de )?pessoa jur[ií]dica"), "Referencia Direta", "Alta", "P1", 85, False),
+    PatternDef("Máscara clássica CNPJ", re.compile(r"00\.000\.000/0000-00|99\.999\.999/9999-99|##\.###\.###/####-##|__\.___.___/____-__"), "Mascara", "Alta", "P0", 95, False),
+    PatternDef("Mask/Inputmask contextual", re.compile(r"(?i)\b(mask|mascara|inputmask|placeholder|pattern)\b"), "Mascara", "Alta", "P1", 80, True),
+    PatternDef("Regex 14 dígitos", re.compile(r"\\d\{14\}|\[0-9\]\{14\}|\b\d\{14\}\b"), "Validacao", "Alta", "P0", 95, True),
+    PatternDef("Regex CNPJ formatado", re.compile(r"\\d\{2\}\\\.\\d\{3\}\\\.\\d\{3\}[/\\/]\\d\{4\}-\\d\{2\}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}"), "Validacao", "Alta", "P0", 95, True),
+    PatternDef("Metodo validar CNPJ", re.compile(r"(?i)\bvalid\w*cnpj\b|\bcnpj\w*valid\b|\bisValidCnpj\b|\bcnpjValido\b|\bcheckCnpj\b|\bvalidaCnpj\b"), "Validacao", "Alta", "P0", 100, False),
+    PatternDef("Dígito verificador contextual", re.compile(r"(?i)d[ií]gito\s+verificador|m[oó]dulo\s*11|calcula[_-]?digito|primeiro[_-]?digito|segundo[_-]?digito"), "Validacao", "Alta", "P1", 80, True),
+    PatternDef("Pesos CNPJ 1o dígito", re.compile(r"5\s*,\s*4\s*,\s*3\s*,\s*2\s*,\s*9\s*,\s*8\s*,\s*7\s*,\s*6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2"), "Validacao", "Alta", "P0", 98, False),
+    PatternDef("Pesos CNPJ 2o dígito", re.compile(r"6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2\s*,\s*9\s*,\s*8\s*,\s*7\s*,\s*6\s*,\s*5\s*,\s*4\s*,\s*3\s*,\s*2"), "Validacao", "Alta", "P0", 98, False),
+    PatternDef("Len 14 contextual", re.compile(r"(?i)\blen\s*\(?\s*\w+\s*\)?\s*==\s*14\b|\.length\s*==\s*14\b|max_length\s*=\s*14\b|\bvarchar\s*\(\s*14\s*\)|\bnvarchar\s*\(\s*14\s*\)|\bchar\s*\(\s*14\s*\)"), "Validacao", "Alta", "P0", 90, True),
+    PatternDef("IsNumeric contextual", re.compile(r"(?i)\b(isdigit|isnumeric|numeric)\b"), "Validacao", "Alta", "P1", 80, True),
+    PatternDef("Nomes de coluna CNPJ", re.compile(r"(?i)\b(nr_cnpj|num_cnpj|cd_cnpj|cnpj_nr|cnpj_num|ds_cnpj|tx_cnpj)\b"), "Banco", "Alta", "P0", 95, False),
+    PatternDef("Index/constraint CNPJ", re.compile(r"(?i)(create\s+(unique\s+)?index|constraint)[^\n]{0,100}cnpj"), "Banco", "Alta", "P0", 92, False),
+    PatternDef("DDL com CNPJ", re.compile(r"(?i)(create|alter)\s+table[^\n]{0,120}cnpj"), "Banco", "Alta", "P1", 85, False),
+    # Exploratório (fora do executivo por padrão)
+    PatternDef("Mensagem erro CNPJ", re.compile(r"(?i)(message|mensagem|erro|error|msg)[^\n]{0,60}cnpj|cnpj[^\n]{0,60}(invalido|inválido|invalid|obrigat)"), "Mensagem", "Media", "P3", 50, False, "exploratorio"),
 )
-
-SUGGESTION_BY_CATEGORY = {
-    "Referencia Direta": "Mapear usos para priorizar revisão de regras de negócio e contratos.",
-    "Mascara": "Atualizar máscaras/formatadores para permitir caracteres alfanuméricos nas 12 primeiras posições.",
-    "Validacao": "Revisar regex e algoritmo de validação (DV/módulo 11) para CNPJ alfanumérico.",
-    "Normalizacao": "Evitar sanitização que preserve apenas dígitos quando o campo for CNPJ novo.",
-    "Banco": "Revisar tipo/tamanho de coluna, índices e constraints para cenário alfanumérico.",
-    "Front-end": "Ajustar UX de inputs/labels e bibliotecas de máscara/validação.",
-    "Integracao": "Conferir payloads, endpoints e integrações fiscais com novo padrão.",
-    "Mensagem": "Atualizar mensagens de validação e documentação exibida ao usuário.",
-    "Indicio Correlato": "Validar se o ponto correlato também deve entrar no backlog de migração.",
-}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scanner de referências CNPJ em bases de código.")
-    parser.add_argument("root", nargs="?", default=".", help="Diretório raiz para varredura.")
-    parser.add_argument("--out-dir", default="./resultado_cnpj_scan", help="Diretório de saída dos relatórios.")
-    parser.add_argument("--encoding", default="utf-8", help="Encoding primário para leitura de arquivos.")
-    parser.add_argument("--max-file-size-kb", type=int, default=1024, help="Ignora arquivos maiores que este limite.")
-    parser.add_argument("--include-ext", nargs="*", help="Extensões adicionais (ex.: .scala .go).")
-    parser.add_argument("--exclude-dir", nargs="*", help="Diretórios adicionais para exclusão.")
-    parser.add_argument("--incluir-indicios", action="store_true", help="Inclui padrões de indícios correlatos (criticidade baixa).")
-    parser.add_argument("--incluir-documentacao", action="store_true", help="Inclui arquivos de documentação (README, .md, .txt, docs/).")
-    parser.add_argument("--sem-html", action="store_true", help="Não gera o relatório HTML.")
-    parser.add_argument("--sem-txt", action="store_true", help="Não gera o relatório TXT.")
-    parser.add_argument("--somente-csv-html", action="store_true", help="Gera apenas CSV e HTML (atalho para --sem-txt).")
-    parser.add_argument(
-        "--project-group-mode",
-        choices=("auto", "topdir", "none"),
-        default="auto",
-        help="Modo de agrupamento por projeto: auto (marcadores), topdir (1o nível), none (sem agrupamento).",
-    )
-    return parser.parse_args()
-
-
-def infer_layer(path: Path) -> str:
-    ext = path.suffix.lower()
-    path_lower = path.as_posix().lower()
-    if ext in {".sql", ".ddl", ".dml", ".psql", ".hql"}:
-        return "Banco"
-    if ext in {".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte", ".html", ".htm", ".cshtml", ".razor", ".aspx", ".ascx", ".css", ".scss", ".sass", ".less"}:
-        return "Front-end"
-    if ext in {".json", ".xml", ".config", ".yml", ".yaml", ".ini", ".properties", ".csproj", ".vbproj", ".env", ".tf", ".tfvars", ".gradle"}:
-        return "Config"
-    if ext in {".ps1", ".bat", ".cmd", ".sh", ".bash"}:
-        return "Script"
-    if ext in {".cs", ".vb", ".fs", ".fsx", ".java", ".kt", ".kts", ".py", ".php", ".rb", ".go", ".scala", ".rs", ".pl"}:
-        if re.search(r"(^|/)(frontend|client|web)(/|$)", path_lower):
-            return "Front-end"
-        if re.search(r"(^|/)(database|db|scriptsql|migrations)(/|$)", path_lower):
-            return "Banco"
-        return "Back-end"
-    return "Nao Classificado"
-
-
-def iter_source_files(
-    root: Path,
-    extensions: set[str],
-    excluded_dirs: set[str],
-    max_size_kb: int,
-    script_path: Path,
-    include_docs: bool,
-) -> Iterable[Path]:
-    max_size_bytes = max_size_kb * 1024
-    for path in root.rglob("*"):
-        if path.is_dir():
-            continue
-        if any(part in excluded_dirs for part in path.parts):
-            continue
-        if path.suffix.lower() not in extensions:
-            continue
-        lower_name = path.name.lower()
-        lower_parts = {p.lower() for p in path.parts}
-        if not include_docs:
-            if path.suffix.lower() in DOC_EXTENSIONS:
-                continue
-            if any(part in DOC_DIR_HINTS for part in lower_parts):
-                continue
-            if lower_name.startswith("readme"):
-                continue
-        if path.resolve() == script_path:
-            continue
-        if SKIP_FILENAME_RE.search(path.name) or path.name in SKIP_FILENAMES:
-            continue
-        try:
-            if path.stat().st_size > max_size_bytes:
-                continue
-        except OSError:
-            continue
-        yield path
-
-
-def safe_read_lines(path: Path, encoding: str) -> Sequence[str]:
-    for enc in (encoding, "utf-8", "latin-1"):
-        try:
-            with path.open("r", encoding=enc, errors="strict") as f:
-                return f.readlines()
-        except UnicodeDecodeError:
-            continue
-        except OSError:
-            return []
-    return []
-
-
-def active_patterns(include_indicios: bool) -> tuple[PatternDef, ...]:
-    return PATTERNS if include_indicios else tuple(p for p in PATTERNS if not p.apenas_indicios)
+    p = argparse.ArgumentParser(description="Scanner defensável de impacto CNPJ.")
+    p.add_argument("root", nargs="?", default=".")
+    p.add_argument("--out-dir", default="./resultado_cnpj_scan")
+    p.add_argument("--encoding", default="utf-8")
+    p.add_argument("--max-file-size-kb", type=int, default=1024)
+    p.add_argument("--include-ext", nargs="*")
+    p.add_argument("--exclude-dir", nargs="*")
+    p.add_argument("--sem-html", action="store_true")
+    p.add_argument("--sem-txt", action="store_true")
+    p.add_argument("--somente-csv-html", action="store_true")
+    p.add_argument("--project-group-mode", choices=("auto", "topdir", "none"), default="auto")
+    p.add_argument("--modo-relatorio", choices=("executivo", "exploratorio"), default="executivo")
+    p.add_argument("--context-window", type=int, default=4)
+    return p.parse_args()
 
 
 def detect_project(path: Path, root: Path, mode: str) -> str:
@@ -217,173 +114,188 @@ def detect_project(path: Path, root: Path, mode: str) -> str:
         return "SEM_GRUPO"
     if mode == "topdir":
         return rel.parts[0] if len(rel.parts) > 1 else "RAIZ"
-
     current = path.parent
     while True:
-        for marker in PROJECT_MARKERS:
-            if (current / marker).exists():
-                return "RAIZ" if current == root else current.name
+        if any((current / m).exists() for m in PROJECT_MARKERS):
+            return "RAIZ" if current == root else current.name
         if current == root:
             break
         current = current.parent
     return rel.parts[0] if len(rel.parts) > 1 else "RAIZ"
 
 
-def scan_file(path: Path, root: Path, encoding: str, patterns: Sequence[PatternDef], project_group_mode: str) -> list[Finding]:
-    findings: list[Finding] = []
-    lines = safe_read_lines(path, encoding)
-    rel = path.relative_to(root).as_posix()
-    projeto = detect_project(path, root, project_group_mode)
-    absoluto = str(path.resolve())
-    camada = infer_layer(path)
+def infer_layer(path: Path) -> str:
     ext = path.suffix.lower()
+    if ext in {".sql", ".ddl", ".dml", ".psql", ".hql"}:
+        return "Banco"
+    if ext in {".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".cshtml", ".razor"}:
+        return "Front-end"
+    if ext in {".json", ".xml", ".config", ".yml", ".yaml", ".ini", ".properties", ".env", ".csproj", ".vbproj", ".gradle", ".tf", ".tfvars"}:
+        return "Config"
+    if ext in {".ps1", ".bat", ".cmd", ".sh", ".bash"}:
+        return "Script"
+    return "Back-end"
 
-    for idx, line in enumerate(lines, start=1):
-        line_clean = line.rstrip("\n")
-        for pattern in patterns:
-            if not pattern.regex.search(line_clean):
+
+def classify_source_kind(path: Path) -> str:
+    p = path.as_posix().lower()
+    name = path.name.lower()
+    if any(token in p for token in ("/vendor/", "/third_party/", "/third-party/", "/plugins/", "/plugin/", "/lib/", "/node_modules/", "/inputmask/")):
+        return "third_party"
+    if "migration" in p or "migrations" in p:
+        return "migration"
+    if "snapshot" in p or name.endswith("snapshot.cs"):
+        return "snapshot"
+    if "designer" in p or name.endswith(".designer.cs"):
+        return "designer"
+    if any(token in p for token in ("/generated/", "/codegen/", "/gen/")) or "autogenerated" in name or name.endswith(".g.cs"):
+        return "generated"
+    return "source"
+
+
+def iter_source_files(root: Path, exts: set[str], excluded_dirs: set[str], max_size_kb: int) -> Iterable[Path]:
+    max_size = max_size_kb * 1024
+    for path in root.rglob("*"):
+        if path.is_dir():
+            continue
+        if path.suffix.lower() not in exts:
+            continue
+        if any(part.lower() in excluded_dirs for part in path.parts):
+            continue
+        if SKIP_FILENAME_RE.search(path.name) or path.name.lower() in SKIP_FILENAMES:
+            continue
+        try:
+            if path.stat().st_size > max_size:
                 continue
-            context = ""
-            if idx > 1:
-                context += lines[idx - 2].strip() + " | "
-            context += line_clean.strip()
-            if idx < len(lines):
-                context += " | " + lines[idx].strip()
+        except OSError:
+            continue
+        yield path
 
-            findings.append(
-                Finding(
-                    projeto=projeto,
-                    arquivo=rel,
-                    arquivo_absoluto=absoluto,
-                    extensao=ext,
-                    camada=camada,
-                    linha=idx,
-                    nome_padrao=pattern.nome,
-                    categoria=pattern.categoria,
-                    criticidade=pattern.criticidade,
-                    trecho=line_clean.strip()[:220],
-                    contexto=context[:500],
-                    acao_sugerida=SUGGESTION_BY_CATEGORY.get(pattern.categoria, "Revisar ponto identificado."),
-                )
+
+def safe_read_lines(path: Path, enc: str) -> Sequence[str]:
+    for e in (enc, "utf-8", "latin-1"):
+        try:
+            return path.read_text(encoding=e).splitlines()
+        except Exception:
+            pass
+    return []
+
+
+def active_patterns(mode: str) -> tuple[PatternDef, ...]:
+    if mode == "exploratorio":
+        return PATTERNS
+    return tuple(p for p in PATTERNS if p.mode == "executivo")
+
+
+def has_anchor(context: str) -> bool:
+    return bool(CNPJ_ANCHOR_RE.search(context) or MASK_CLASSIC_RE.search(context))
+
+
+def should_drop_generic_mask(line: str) -> bool:
+    return bool(re.search(r"(?i)\$\.fn\.inputmask|data-inputmask|\bmaskset\b|\balias(es)?\b|\binputmask\(fn\)", line))
+
+
+def contextual_ok(pattern: PatternDef, lines: Sequence[str], idx: int, window: int) -> bool:
+    start = max(0, idx - window)
+    end = min(len(lines), idx + window + 1)
+    ctx = "\n".join(lines[start:end])
+    line = lines[idx]
+    if pattern.nome == "Mask/Inputmask contextual":
+        if should_drop_generic_mask(line) and not has_anchor(ctx):
+            return False
+        return has_anchor(ctx)
+    if pattern.nome == "Dígito verificador contextual":
+        if not has_anchor(ctx):
+            return False
+        return bool(re.search(r"(?i)pesos|\b14\b|valida", ctx) or re.search(r"5\s*,\s*4\s*,\s*3\s*,\s*2", ctx))
+    if pattern.nome in {"Regex 14 dígitos", "Regex CNPJ formatado", "Len 14 contextual", "IsNumeric contextual"}:
+        return has_anchor(ctx)
+    return True
+
+
+def dedup_id_for(path: str, region: int, category: str) -> str:
+    raw = f"{path}|{region}|{category}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def scan_file(path: Path, root: Path, args: argparse.Namespace, patterns: Sequence[PatternDef]) -> tuple[list[Finding], list[Finding]]:
+    lines = safe_read_lines(path, args.encoding)
+    if not lines:
+        return [], []
+    rel = path.relative_to(root).as_posix()
+    src_kind = classify_source_kind(path)
+    projeto = detect_project(path, root, args.project_group_mode)
+    camada = infer_layer(path)
+
+    kept: list[Finding] = []
+    discarded: list[Finding] = []
+    seen_region: set[tuple[int, str]] = set()
+
+    for i, line in enumerate(lines):
+        for p in patterns:
+            if not p.regex.search(line):
+                continue
+            ok_context = contextual_ok(p, lines, i, args.context_window) if p.requires_context else True
+            region = i // max(args.context_window, 1)
+            if (region, p.categoria) in seen_region:
+                continue
+            finding = Finding(
+                projeto=projeto,
+                arquivo=rel,
+                arquivo_absoluto=str(path.resolve()),
+                extensao=path.suffix.lower(),
+                camada=camada,
+                linha=i + 1,
+                nome_padrao=("Validação legada de CNPJ numérico" if p.categoria == "Validacao" and region in [r for r, c in seen_region if c == "Validacao"] else p.nome),
+                categoria=p.categoria,
+                criticidade=p.criticidade,
+                trecho=line.strip()[:220],
+                contexto=" | ".join(lines[max(0, i-1): min(len(lines), i+2)])[:500],
+                score=p.score,
+                source_kind=src_kind,
+                is_generated="sim" if src_kind in {"generated", "snapshot", "designer"} else "nao",
+                is_third_party="sim" if src_kind == "third_party" else "nao",
+                contextual_match="sim" if ok_context else "nao",
+                prioridade_backlog=p.prioridade_backlog,
+                dedup_id=dedup_id_for(rel, region, p.categoria),
             )
-    return findings
+            if not ok_context:
+                discarded.append(finding)
+                continue
+            if args.modo_relatorio == "executivo" and src_kind in {"third_party", "generated", "snapshot", "designer"}:
+                discarded.append(finding)
+                continue
+            seen_region.add((region, p.categoria))
+            kept.append(finding)
+    return kept, discarded
 
 
-def write_csv(findings: list[Finding], output: Path) -> None:
-    with output.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, delimiter=";")
-        writer.writerow([
-            "projeto", "arquivo", "arquivo_absoluto", "extensao", "camada", "linha", "nome_padrao",
-            "categoria", "criticidade", "trecho", "contexto", "acao_sugerida",
+def write_csv(path: Path, rows: list[Finding]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow([
+            "projeto", "arquivo", "arquivo_absoluto", "extensao", "camada", "linha", "nome_padrao", "categoria", "criticidade",
+            "trecho", "contexto", "score", "source_kind", "is_generated", "is_third_party", "contextual_match", "prioridade_backlog", "dedup_id",
         ])
-        for item in findings:
-            writer.writerow([
-                item.projeto,
-                item.arquivo,
-                item.arquivo_absoluto,
-                item.extensao,
-                item.camada,
-                item.linha,
-                item.nome_padrao,
-                item.categoria,
-                item.criticidade,
-                item.trecho,
-                item.contexto,
-                item.acao_sugerida,
+        for r in rows:
+            w.writerow([
+                r.projeto, r.arquivo, r.arquivo_absoluto, r.extensao, r.camada, r.linha, r.nome_padrao, r.categoria, r.criticidade,
+                r.trecho, r.contexto, r.score, r.source_kind, r.is_generated, r.is_third_party, r.contextual_match, r.prioridade_backlog, r.dedup_id,
             ])
 
 
-def write_txt(findings: list[Finding], output: Path, total_files: int, include_indicios: bool) -> None:
-    grouped: dict[str, list[Finding]] = {}
-    for item in findings:
-        grouped.setdefault(item.projeto, []).append(item)
-
-    with output.open("w", encoding="utf-8") as f:
-        f.write("Relatório de varredura CNPJ\n")
-        f.write("=" * 100 + "\n")
-        f.write(f"Arquivos varridos: {total_files}\n")
-        f.write(f"Arquivos afetados: {len({i.arquivo_absoluto for i in findings})}\n")
-        f.write(f"Total de ocorrências: {len(findings)}\n")
-        f.write(f"Indícios: {'Incluídos' if include_indicios else 'Excluídos'}\n\n")
-
-        def _summary(title: str, values: dict[str, int]) -> None:
-            f.write(f"---- {title} ----\n")
-            for key, count in sorted(values.items(), key=lambda x: x[1], reverse=True):
-                f.write(f"  {key:<25} {count:>6}\n")
-            f.write("\n")
-
-        _summary("POR CATEGORIA", _counter(i.categoria for i in findings))
-        _summary("POR CAMADA", _counter(i.camada for i in findings))
-        _summary("POR CRITICIDADE", _counter(i.criticidade for i in findings))
-
-        f.write("---- TOP 50 PROJETOS ----\n")
-        for projeto, count in sorted(_counter(i.projeto for i in findings).items(), key=lambda x: x[1], reverse=True)[:50]:
-            f.write(f"  {count:>6}  {projeto}\n")
-        f.write("\n")
-
-        f.write("---- TOP 50 ARQUIVOS ----\n")
-        for arq, count in sorted(_counter(i.arquivo_absoluto for i in findings).items(), key=lambda x: x[1], reverse=True)[:50]:
-            f.write(f"  {count:>6}  {arq}\n")
-
-
-def write_html(findings: list[Finding], output: Path, total_files: int) -> None:
-    rows = []
-    for item in findings:
-        rows.append(
-            "<tr>"
-            f"<td>{html.escape(item.projeto)}</td>"
-            f"<td>{html.escape(item.arquivo)}</td>"
-            f"<td>{html.escape(item.arquivo_absoluto)}</td>"
-            f"<td>{html.escape(item.extensao)}</td>"
-            f"<td>{html.escape(item.camada)}</td>"
-            f"<td>{item.linha}</td>"
-            f"<td>{html.escape(item.nome_padrao)}</td>"
-            f"<td>{html.escape(item.categoria)}</td>"
-            f"<td class='{item.criticidade}'>{html.escape(item.criticidade)}</td>"
-            f"<td>{html.escape(item.trecho)}</td>"
-            "</tr>"
-        )
-
-    html_doc = f"""<!DOCTYPE html>
-<html lang=\"pt-BR\">
-<head>
-  <meta charset=\"UTF-8\" />
-  <title>Relatório CNPJ</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; margin: 20px; }}
-    table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
-    th, td {{ border: 1px solid #ddd; padding: 6px; text-align: left; }}
-    th {{ background: #f2f2f2; position: sticky; top: 0; }}
-    tr:nth-child(even) {{ background: #fbfbfb; }}
-    .Alta {{ background: #ffe9e9; }}
-    .Media {{ background: #fff7df; }}
-    .Baixa {{ background: #eaf7ea; }}
-  </style>
-</head>
-<body>
-  <h1>Relatório de varredura CNPJ</h1>
-  <p><strong>Arquivos varridos:</strong> {total_files} | <strong>Ocorrências:</strong> {len(findings)}</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Projeto</th><th>Arquivo</th><th>Arquivo absoluto</th><th>Ext</th><th>Camada</th><th>Linha</th><th>Padrão</th><th>Categoria</th><th>Criticidade</th><th>Trecho</th>
-      </tr>
-    </thead>
-    <tbody>
-      {''.join(rows)}
-    </tbody>
-  </table>
-</body>
-</html>
-"""
-    output.write_text(html_doc, encoding="utf-8")
-
-
-def _counter(values: Iterable[str]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for val in values:
-        counts[val] = counts.get(val, 0) + 1
-    return counts
+def write_html(path: Path, rows: list[Finding], title: str) -> None:
+    trs = "".join(
+        f"<tr><td>{html.escape(r.projeto)}</td><td>{html.escape(r.arquivo)}</td><td>{r.linha}</td><td>{html.escape(r.nome_padrao)}</td><td>{r.score}</td><td>{html.escape(r.source_kind)}</td><td>{html.escape(r.prioridade_backlog)}</td><td>{html.escape(r.trecho)}</td></tr>"
+        for r in rows
+    )
+    path.write_text(
+        f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>{html.escape(title)}</title>
+<style>body{{font-family:Arial;margin:20px}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px;font-size:12px}}</style>
+<h1>{html.escape(title)}</h1><p>Total: {len(rows)}</p>
+<table><thead><tr><th>Projeto</th><th>Arquivo</th><th>Linha</th><th>Padrão</th><th>Score</th><th>source_kind</th><th>Prioridade</th><th>Trecho</th></tr></thead><tbody>{trs}</tbody></table></html>""",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
@@ -391,61 +303,50 @@ def main() -> None:
     root = Path(args.root).resolve()
     out_dir = Path(args.out_dir).resolve()
 
-    start_msg = (
-        f"Iniciando varredura em: {root}\n"
-        f"Saída: {out_dir}\n"
-        f"Modo de projeto: {args.project_group_mode}\n"
-        f"Indícios: {'sim' if args.incluir_indicios else 'não'}\n"
-        f"Documentação: {'sim' if args.incluir_documentacao else 'não'}"
-    )
-    print(start_msg, flush=True)
-
-    extensions = set(SUPPORTED_EXTENSIONS)
+    exts = set(SUPPORTED_EXTENSIONS)
     if args.include_ext:
-        extensions.update(ext if ext.startswith(".") else f".{ext}" for ext in args.include_ext)
-
-    excluded_dirs = set(DEFAULT_EXCLUDED_DIRS)
+        exts.update(e if e.startswith(".") else f".{e}" for e in args.include_ext)
+    excluded = set(DEFAULT_EXCLUDED_DIRS)
     if args.exclude_dir:
-        excluded_dirs.update(args.exclude_dir)
+        excluded.update(x.lower() for x in args.exclude_dir)
+    patterns = active_patterns(args.modo_relatorio)
 
-    patterns = active_patterns(args.incluir_indicios)
+    print(f"Iniciando varredura em: {root}", flush=True)
+    print(f"Modo: {args.modo_relatorio} | Janela contexto: ±{args.context_window}", flush=True)
     print("Coletando arquivos elegíveis...", flush=True)
-    files = list(
-        iter_source_files(
-            root,
-            extensions,
-            excluded_dirs,
-            args.max_file_size_kb,
-            Path(__file__).resolve(),
-            args.incluir_documentacao,
-        )
-    )
+    files = list(iter_source_files(root, exts, excluded, args.max_file_size_kb))
     print(f"Arquivos elegíveis: {len(files)}", flush=True)
 
     findings: list[Finding] = []
+    noises: list[Finding] = []
     total = len(files)
-    progress_step = 200
-    for idx, file_path in enumerate(files, start=1):
-        findings.extend(scan_file(file_path, root, args.encoding, patterns, args.project_group_mode))
-        if idx % progress_step == 0 or idx == total:
-            print(f"Processados {idx}/{total} arquivos...", flush=True)
-    findings.sort(key=lambda i: (i.projeto, i.arquivo, i.linha, i.nome_padrao))
+    for i, fp in enumerate(files, start=1):
+        k, d = scan_file(fp, root, args, patterns)
+        findings.extend(k)
+        noises.extend(d)
+        if i % 200 == 0 or i == total:
+            print(f"Processados {i}/{total} arquivos...", flush=True)
+
+    findings.sort(key=lambda r: (r.prioridade_backlog, -r.score, r.projeto, r.arquivo, r.linha))
+    noises.sort(key=lambda r: (r.arquivo, r.linha))
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_csv(findings, out_dir / "relatorio_cnpj.csv")
+    write_csv(out_dir / "relatorio_cnpj.csv", findings)
+    write_csv(out_dir / "impactos_priorizados.csv", findings)
+    write_csv(out_dir / "ruidos_descartados.csv", noises)
+
     sem_txt = args.sem_txt or args.somente_csv_html
     if not sem_txt:
-        write_txt(findings, out_dir / "relatorio_cnpj.txt", len(files), args.incluir_indicios)
+        (out_dir / "relatorio_cnpj.txt").write_text(
+            f"Arquivos varridos: {len(files)}\nOcorrencias executivas: {len(findings)}\nRuido descartado: {len(noises)}\n",
+            encoding="utf-8",
+        )
     if not args.sem_html:
-        write_html(findings, out_dir / "relatorio_cnpj.html", len(files))
+        write_html(out_dir / "relatorio_executivo.html", findings, "Relatório Executivo CNPJ")
+        write_html(out_dir / "relatorio_cnpj.html", findings, "Relatório CNPJ")
 
-    project_count = len({f.projeto for f in findings})
-    print(f"Arquivos analisados: {len(files)}")
-    print(f"Padrões ativos: {len(patterns)}")
     print(f"Ocorrências encontradas: {len(findings)}")
-    print(f"Projetos com ocorrências: {project_count}")
-    print(f"TXT gerado: {'não' if sem_txt else 'sim'}")
-    print(f"HTML gerado: {'não' if args.sem_html else 'sim'}")
+    print(f"Ruídos descartados: {len(noises)}")
     print(f"Relatórios gerados em: {out_dir}")
 
 
