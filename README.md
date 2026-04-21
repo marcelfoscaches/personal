@@ -16,6 +16,7 @@ Script em Python para varrer diretórios no **Windows e Linux** e identificar po
   - **Indícios correlatos** (opcional via `--incluir-indicios`)
 - Agrupamento por **projeto/produto** com `--project-group-mode` (`auto`, `topdir`, `none`).
 - Exportação em **CSV**, **TXT** e **HTML** (ou sem HTML com `--sem-html`).
+- Exibição de progresso em tempo real no console (`Coletando arquivos`, `Processados X/Y`).
 - Exibe caminho relativo e **arquivo absoluto** para facilitar triagem entre clones locais diferentes.
 
 ## Extensões cobertas por padrão
@@ -52,6 +53,12 @@ Sem relatório HTML:
 python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --sem-html
 ```
 
+Somente CSV e HTML (sem TXT):
+
+```bash
+python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --somente-csv-html
+```
+
 ## Saídas geradas
 
 No diretório de saída:
@@ -59,6 +66,8 @@ No diretório de saída:
 - `relatorio_cnpj.csv`
 - `relatorio_cnpj.txt`
 - `relatorio_cnpj.html` (exceto com `--sem-html`)
+
+Você também pode remover TXT com `--sem-txt` ou `--somente-csv-html`.
 
 Campos principais:
 

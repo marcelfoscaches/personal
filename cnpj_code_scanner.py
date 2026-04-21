@@ -124,6 +124,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exclude-dir", nargs="*", help="Diretórios adicionais para exclusão.")
     parser.add_argument("--incluir-indicios", action="store_true", help="Inclui padrões de indícios correlatos (criticidade baixa).")
     parser.add_argument("--sem-html", action="store_true", help="Não gera o relatório HTML.")
+    parser.add_argument("--sem-txt", action="store_true", help="Não gera o relatório TXT.")
+    parser.add_argument("--somente-csv-html", action="store_true", help="Gera apenas CSV e HTML (atalho para --sem-txt).")
     parser.add_argument(
         "--project-group-mode",
         choices=("auto", "topdir", "none"),
@@ -370,6 +372,14 @@ def main() -> None:
     root = Path(args.root).resolve()
     out_dir = Path(args.out_dir).resolve()
 
+    start_msg = (
+        f"Iniciando varredura em: {root}\n"
+        f"Saída: {out_dir}\n"
+        f"Modo de projeto: {args.project_group_mode}\n"
+        f"Indícios: {'sim' if args.incluir_indicios else 'não'}"
+    )
+    print(start_msg, flush=True)
+
     extensions = set(SUPPORTED_EXTENSIONS)
     if args.include_ext:
         extensions.update(ext if ext.startswith(".") else f".{ext}" for ext in args.include_ext)
@@ -379,16 +389,24 @@ def main() -> None:
         excluded_dirs.update(args.exclude_dir)
 
     patterns = active_patterns(args.incluir_indicios)
+    print("Coletando arquivos elegíveis...", flush=True)
     files = list(iter_source_files(root, extensions, excluded_dirs, args.max_file_size_kb, Path(__file__).resolve()))
+    print(f"Arquivos elegíveis: {len(files)}", flush=True)
 
     findings: list[Finding] = []
-    for file_path in files:
+    total = len(files)
+    progress_step = 200
+    for idx, file_path in enumerate(files, start=1):
         findings.extend(scan_file(file_path, root, args.encoding, patterns, args.project_group_mode))
+        if idx % progress_step == 0 or idx == total:
+            print(f"Processados {idx}/{total} arquivos...", flush=True)
     findings.sort(key=lambda i: (i.projeto, i.arquivo, i.linha, i.nome_padrao))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(findings, out_dir / "relatorio_cnpj.csv")
-    write_txt(findings, out_dir / "relatorio_cnpj.txt", len(files), args.incluir_indicios)
+    sem_txt = args.sem_txt or args.somente_csv_html
+    if not sem_txt:
+        write_txt(findings, out_dir / "relatorio_cnpj.txt", len(files), args.incluir_indicios)
     if not args.sem_html:
         write_html(findings, out_dir / "relatorio_cnpj.html", len(files))
 
@@ -397,6 +415,7 @@ def main() -> None:
     print(f"Padrões ativos: {len(patterns)}")
     print(f"Ocorrências encontradas: {len(findings)}")
     print(f"Projetos com ocorrências: {project_count}")
+    print(f"TXT gerado: {'não' if sem_txt else 'sim'}")
     print(f"HTML gerado: {'não' if args.sem_html else 'sim'}")
     print(f"Relatórios gerados em: {out_dir}")
 
