@@ -7,6 +7,7 @@ Scanner Python para mapear impacto real da migração de CNPJ com foco em **defe
 - **Modo executivo (padrão)**: só promove achado com âncora semântica de CNPJ e validação contextual.
 - **Modo exploratório**: amplia cobertura e aceita sinais mais fracos.
 - Exclusão estrutural no executivo para `third_party`, `generated`, `snapshot`, `designer`.
+- Filtro semântico de alvo: descarta máscaras/operações com alvo principal `telefone`, `celular`, `email`, `fax`, `cep`, `endereco`, `inscricaoEstadual`, `inscricaoMunicipal` (mesmo com CNPJ por perto).
 - Janela de contexto configurável (`--context-window`, padrão `4` => ±4 linhas).
 - Deduplicação por bloco/categoria (`dedup_id`).
 

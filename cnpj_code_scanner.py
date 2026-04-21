@@ -33,6 +33,12 @@ SKIP_FILENAME_RE = re.compile(r"\.(?:min\.(?:js|css)|map|lock)$", re.IGNORECASE)
 SKIP_FILENAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock"}
 CNPJ_ANCHOR_RE = re.compile(r"(?i)\b(cnpj|cpf\s*/\s*cnpj|cpfcnpj|cnpjcpf|nr_cnpj|num_cnpj|cd_cnpj|cnpj_nr|cnpj_num)\b")
 MASK_CLASSIC_RE = re.compile(r"00\.000\.000/0000-00|99\.999\.999/9999-99|##\.###\.###/####-##")
+NON_CNPJ_TARGET_RE = re.compile(
+    r"(?i)\b(telefone|celular|email|e-?mail|fax|cep|endereco|endereço|inscricaoestadual|inscricao_estadual|ie\b|inscricaomunicipal|inscricao_municipal|im\b)\b"
+)
+POSITIVE_CNPJ_TARGET_RE = re.compile(
+    r"(?i)\b(cnpj|cpfcnpj|cpf_cnpj|cpf\s*/\s*cnpj|documento(pj)?|pessoa_juridica|pessoajuridica|cnpj_matriz)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,32 @@ def should_drop_generic_mask(line: str) -> bool:
     return bool(re.search(r"(?i)\$\.fn\.inputmask|data-inputmask|\bmaskset\b|\balias(es)?\b|\binputmask\(fn\)", line))
 
 
+def extract_semantic_targets(text: str) -> str:
+    patterns = [
+        r'(?i)\b(id|name|for|placeholder|ng-model|formControlName)\s*=\s*["\']([^"\']+)["\']',
+        r'(?i)\b(const|let|var|public static|private static)\s+([A-Za-z_][\w$]*)',
+        r'(?i)\b([A-Za-z_][\w$]*)\s*:\s*\{',
+        r'(?i)\b([A-Za-z_][\w$]*)\s*=',
+    ]
+    values: list[str] = []
+    for p in patterns:
+        for m in re.finditer(p, text):
+            if m.lastindex and m.lastindex >= 2:
+                values.append((m.group(2) or "").strip())
+            elif m.lastindex and m.lastindex >= 1:
+                values.append((m.group(1) or "").strip())
+    return " ".join(values).lower()
+
+
+def semantic_target_ok(context: str, line: str) -> bool:
+    targets = extract_semantic_targets(context + "\n" + line)
+    if targets and NON_CNPJ_TARGET_RE.search(targets) and not POSITIVE_CNPJ_TARGET_RE.search(targets):
+        return False
+    if NON_CNPJ_TARGET_RE.search(line) and not POSITIVE_CNPJ_TARGET_RE.search(line):
+        return False
+    return True
+
+
 def contextual_ok(pattern: PatternDef, lines: Sequence[str], idx: int, window: int) -> bool:
     start = max(0, idx - window)
     end = min(len(lines), idx + window + 1)
@@ -203,13 +235,17 @@ def contextual_ok(pattern: PatternDef, lines: Sequence[str], idx: int, window: i
     if pattern.nome == "Mask/Inputmask contextual":
         if should_drop_generic_mask(line) and not has_anchor(ctx):
             return False
-        return has_anchor(ctx)
+        if not has_anchor(ctx):
+            return False
+        return semantic_target_ok(ctx, line)
     if pattern.nome == "Dígito verificador contextual":
         if not has_anchor(ctx):
             return False
         return bool(re.search(r"(?i)pesos|\b14\b|valida", ctx) or re.search(r"5\s*,\s*4\s*,\s*3\s*,\s*2", ctx))
     if pattern.nome in {"Regex 14 dígitos", "Regex CNPJ formatado", "Len 14 contextual", "IsNumeric contextual"}:
-        return has_anchor(ctx)
+        if not has_anchor(ctx):
+            return False
+        return semantic_target_ok(ctx, line)
     return True
 
 
