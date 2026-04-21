@@ -20,7 +20,7 @@ SUPPORTED_EXTENSIONS = {
     ".json", ".xml", ".yml", ".yaml", ".config", ".ini", ".properties", ".env",
     ".csproj", ".vbproj", ".gradle", ".tf", ".tfvars",
     ".ps1", ".bat", ".cmd", ".sh", ".bash",
-    ".txt", ".md", ".ipynb",
+    ".txt", ".md", ".rst", ".ipynb",
 }
 
 DEFAULT_EXCLUDED_DIRS = {
@@ -37,6 +37,8 @@ PROJECT_MARKERS = {
 
 SKIP_FILENAME_RE = re.compile(r"\.(?:min\.(?:js|css)|map|lock)$", re.IGNORECASE)
 SKIP_FILENAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock"}
+DOC_EXTENSIONS = {".md", ".txt", ".rst"}
+DOC_DIR_HINTS = {"doc", "docs", "documentation", "example", "examples", "sample", "samples"}
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-ext", nargs="*", help="Extensões adicionais (ex.: .scala .go).")
     parser.add_argument("--exclude-dir", nargs="*", help="Diretórios adicionais para exclusão.")
     parser.add_argument("--incluir-indicios", action="store_true", help="Inclui padrões de indícios correlatos (criticidade baixa).")
+    parser.add_argument("--incluir-documentacao", action="store_true", help="Inclui arquivos de documentação (README, .md, .txt, docs/).")
     parser.add_argument("--sem-html", action="store_true", help="Não gera o relatório HTML.")
     parser.add_argument("--sem-txt", action="store_true", help="Não gera o relatório TXT.")
     parser.add_argument("--somente-csv-html", action="store_true", help="Gera apenas CSV e HTML (atalho para --sem-txt).")
@@ -155,7 +158,14 @@ def infer_layer(path: Path) -> str:
     return "Nao Classificado"
 
 
-def iter_source_files(root: Path, extensions: set[str], excluded_dirs: set[str], max_size_kb: int, script_path: Path) -> Iterable[Path]:
+def iter_source_files(
+    root: Path,
+    extensions: set[str],
+    excluded_dirs: set[str],
+    max_size_kb: int,
+    script_path: Path,
+    include_docs: bool,
+) -> Iterable[Path]:
     max_size_bytes = max_size_kb * 1024
     for path in root.rglob("*"):
         if path.is_dir():
@@ -164,6 +174,15 @@ def iter_source_files(root: Path, extensions: set[str], excluded_dirs: set[str],
             continue
         if path.suffix.lower() not in extensions:
             continue
+        lower_name = path.name.lower()
+        lower_parts = {p.lower() for p in path.parts}
+        if not include_docs:
+            if path.suffix.lower() in DOC_EXTENSIONS:
+                continue
+            if any(part in DOC_DIR_HINTS for part in lower_parts):
+                continue
+            if lower_name.startswith("readme"):
+                continue
         if path.resolve() == script_path:
             continue
         if SKIP_FILENAME_RE.search(path.name) or path.name in SKIP_FILENAMES:
@@ -376,7 +395,8 @@ def main() -> None:
         f"Iniciando varredura em: {root}\n"
         f"Saída: {out_dir}\n"
         f"Modo de projeto: {args.project_group_mode}\n"
-        f"Indícios: {'sim' if args.incluir_indicios else 'não'}"
+        f"Indícios: {'sim' if args.incluir_indicios else 'não'}\n"
+        f"Documentação: {'sim' if args.incluir_documentacao else 'não'}"
     )
     print(start_msg, flush=True)
 
@@ -390,7 +410,16 @@ def main() -> None:
 
     patterns = active_patterns(args.incluir_indicios)
     print("Coletando arquivos elegíveis...", flush=True)
-    files = list(iter_source_files(root, extensions, excluded_dirs, args.max_file_size_kb, Path(__file__).resolve()))
+    files = list(
+        iter_source_files(
+            root,
+            extensions,
+            excluded_dirs,
+            args.max_file_size_kb,
+            Path(__file__).resolve(),
+            args.incluir_documentacao,
+        )
+    )
     print(f"Arquivos elegíveis: {len(files)}", flush=True)
 
     findings: list[Finding] = []

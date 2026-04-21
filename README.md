@@ -18,6 +18,7 @@ Script em Python para varrer diretórios no **Windows e Linux** e identificar po
 - Exportação em **CSV**, **TXT** e **HTML** (ou sem HTML com `--sem-html`).
 - Exibição de progresso em tempo real no console (`Coletando arquivos`, `Processados X/Y`).
 - Exibe caminho relativo e **arquivo absoluto** para facilitar triagem entre clones locais diferentes.
+- Por padrão, **ignora documentação** (`README*`, `.md`, `.txt`, `.rst`, pastas `docs/`, `examples/`) para reduzir falso positivo.
 
 ## Extensões cobertas por padrão
 
@@ -45,6 +46,12 @@ Com indícios correlatos:
 
 ```bash
 python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --incluir-indicios
+```
+
+Incluindo documentação (quando você quiser varrer também README/docs):
+
+```bash
+python cnpj_code_scanner.py /caminho/do/sistema --out-dir ./saida --incluir-documentacao
 ```
 
 Sem relatório HTML:
