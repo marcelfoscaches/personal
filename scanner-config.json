@@ -1,0 +1,9 @@
+{
+  "ignored_dirs": [".git", "node_modules", "bin", "obj", "dist", "build", "target", "packages", ".vs", ".idea", ".vscode", "vendor", "coverage"],
+  "extensions": [".cs", ".java", ".js", ".ts", ".html", ".css", ".scss", ".sql", ".php", ".py", ".rb", ".sh", ".ps1", ".xml", ".json", ".yml", ".yaml", ".md"],
+  "ignored_extensions": [".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"],
+  "max_file_size_bytes": 2000000,
+  "min_severity": "BAIXA",
+  "product_names": {},
+  "custom_rules": []
+}

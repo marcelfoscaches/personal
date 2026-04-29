@@ -1,58 +1,69 @@
-# Scanner de impacto de CNPJ alfanumérico (modo defensável)
+# Scanner CNPJ Alfanumérico
 
-Scanner Python para mapear impacto real da migração de CNPJ com foco em **defensabilidade técnica** (menos ruído, mais evidência contextual).
+Ferramenta CLI **multiplataforma (Windows/Linux)** em Python para varredura estática e mapeamento de impactos da transição de CNPJ numérico para alfanumérico.
 
-## Principais mudanças
+## Justificativa da tecnologia
+Python foi escolhido por ser multiplataforma, ter ótima portabilidade para scripts CLI, facilitar regex/análise textual e permitir empacotamento para executável único (PyInstaller).
 
-- **Modo executivo (padrão)**: só promove achado com âncora semântica de CNPJ e validação contextual.
-- **Modo exploratório**: amplia cobertura e aceita sinais mais fracos.
-- Exclusão estrutural no executivo para `third_party`, `generated`, `snapshot`, `designer`.
-- Filtro semântico de alvo: descarta máscaras/operações com alvo principal `telefone`, `celular`, `email`, `fax`, `cep`, `endereco`, `inscricaoEstadual`, `inscricaoMunicipal` (mesmo com CNPJ por perto).
-- Janela de contexto configurável (`--context-window`, padrão `4` => ±4 linhas).
-- Deduplicação por bloco/categoria (`dedup_id`).
-
-## Requisitos
-
-- Python 3.9+
+## Arquivo principal
+- `scanner_cnpj_alfanumerico.py` (arquivo único com scanner, regras, classificação e relatórios).
 
 ## Uso
+> Restrição: **apenas um parâmetro**.
 
 ```bash
-python cnpj_code_scanner.py /caminho/do/codigo --out-dir ./saida
+python scanner_cnpj_alfanumerico.py /caminho/raiz
 ```
 
-Windows (PowerShell):
+Para múltiplas raízes, ainda com 1 parâmetro:
+```bash
+python scanner_cnpj_alfanumerico.py "/repo1;/repo2"
+# ou
+python scanner_cnpj_alfanumerico.py "/repo1,/repo2"
+```
 
+## Exemplos por shell
+### Linux Bash
+```bash
+python3 scanner_cnpj_alfanumerico.py "/home/user/sistema"
+```
+
+### Windows PowerShell
 ```powershell
-python .\cnpj_code_scanner.py "E:\Workspace\TCE" --out-dir "E:\Workspace\TCE\resultado_cnpj_scan"
+python .\scanner_cnpj_alfanumerico.py "C:\Projetos\ERP;C:\Projetos\Portal"
 ```
 
-Modo exploratório:
+### Windows CMD
+```cmd
+python scanner_cnpj_alfanumerico.py "C:\Projetos\ERP"
+```
 
+## Configuração externa
+Arquivo opcional `scanner-config.json` ou `scanner-config.yml` no diretório atual ou raiz analisada.
+Veja `scanner-config.json` deste repositório.
+
+## Saídas geradas
+No diretório `scanner_output/`:
+- `relatorio_cnpj.csv`
+- `relatorio_cnpj.json`
+- `relatorio_cnpj.html`
+- `relatorio_cnpj.md`
+- `resumo_executivo.txt`
+
+## Build/publicação
+### Execução direta
 ```bash
-python cnpj_code_scanner.py /caminho --out-dir ./saida --modo-relatorio exploratorio
+python scanner_cnpj_alfanumerico.py ./examples/sample_project
 ```
 
-Somente CSV + HTML:
-
+### Empacotar executável
 ```bash
-python cnpj_code_scanner.py /caminho --out-dir ./saida --somente-csv-html
+pip install pyinstaller
+pyinstaller --onefile scanner_cnpj_alfanumerico.py
 ```
+Executável gerado em `dist/`.
 
-## Saídas
-
-- `relatorio_cnpj.csv` (compatível com fluxo principal)
-- `impactos_priorizados.csv`
-- `ruidos_descartados.csv`
-- `relatorio_cnpj.txt` (exceto com `--sem-txt` / `--somente-csv-html`)
-- `relatorio_executivo.html` e `relatorio_cnpj.html` (exceto com `--sem-html`)
-
-## Colunas adicionais
-
-- `score`
-- `source_kind`
-- `is_generated`
-- `is_third_party`
-- `contextual_match`
-- `prioridade_backlog`
-- `dedup_id`
+## Testes básicos
+```bash
+python -m unittest -v test_scanner_cnpj_alfanumerico.py
+```
