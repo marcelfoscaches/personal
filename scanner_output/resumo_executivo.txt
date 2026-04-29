@@ -1,0 +1,9 @@
+Resumo Executivo - Scanner CNPJ Alfanumérico
+Data: 2026-04-29T17:58:01.018290Z
+Arquivos varridos: 2
+Total de ocorrências: 10
+Ocorrências ALTA: 3
+Projetos mais impactados: sample_project(10)
+Principais riscos: Campos/tipos numéricos para CNPJ, Regex/máscaras apenas numéricas, Sanitização que remove letras
+Recomendações gerais: tratar CNPJ como texto, revisar regex/máscaras/validações, alinhar contratos de integração e testes.
+Próximos passos: priorizar ALTA, abrir backlog técnico, executar testes de regressão com massa alfanumérica.
